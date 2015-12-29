@@ -46,6 +46,7 @@ class TailWatcher;
 typedef std::map<std::string, Task* > TaskMap;
 typedef std::map<std::string, TailWatcher*> TailMap;
 typedef std::map<std::string, TaskConf> TaskConfMap;
+typedef std::vector<TailWatcher*> TailVec;
 
 class Manager
 {
@@ -104,12 +105,12 @@ class Manager
         void closeWatcher(TailWatcher *tw, 
                 bool close_io = true, 
                 bool remove_pos_entry = false);
-        static void updateWatcherRotate(Manager *manager, 
+        static bool updateWatcherRotate(Manager *manager,
                 string path_pattern,
                 string path,
                 PositionEntry *position_entry);
         void flushBuffer(TailWatcher *tw);
-        static bool receiveLines(void *output, vector<string> &lines);
+        static bool receiveLines(void *filter, void *output, const vector<string> &lines);
 
         set<string> getTasksKeys(const TaskMap &tasks);
         set<string> getTailsKeys(const TailMap &tails);
@@ -123,6 +124,7 @@ class Manager
     private:
         unsigned long m_refresh_interval;
         unsigned long m_line_max_bytes;
+        unsigned long m_read_max_bytes;
         unsigned long m_stat_silent_max_ms;
         string m_pos_path;
         uv_loop_t *m_loop;
@@ -132,6 +134,7 @@ class Manager
         TaskConfMap m_task_confs;
         TaskMap m_tasks;
         TailMap m_tails;
+        TailVec m_tails_deleted;
 
         TimerWatcher *m_refresh_trigger;
 
@@ -139,6 +142,7 @@ class Manager
         PositionFile *m_position_file;
 
         Mutex m_tail_watchers_mutex;
+        Mutex m_tail_watchers_deleted_mutex;
 };
 
 } // namespace logkafka

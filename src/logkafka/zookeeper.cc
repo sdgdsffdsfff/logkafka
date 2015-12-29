@@ -33,10 +33,8 @@ using namespace base;
 
 namespace logkafka {
 
-const string Zookeeper::BROKER_IDS_PATH = "/brokers/ids";
 const unsigned long Zookeeper::REFRESH_INTERVAL_MS = 30000UL;
-const string Zookeeper::LOGKAFKA_CONFIG_PATH = "/logkafka/config/";
-const string Zookeeper::LOGKAFKA_CLIENT_PATH = "/logkafka/client/";
+const unsigned long Zookeeper::SESSION_TIMEOUT_MS = 30000UL;
 
 Zookeeper::Zookeeper()
 {/*{{{*/
@@ -48,6 +46,10 @@ Zookeeper::Zookeeper()
 
     m_log_config = "{}";
     m_broker_urls = "";
+    m_session_timeout_ms = SESSION_TIMEOUT_MS;
+    m_clientid = NULL;
+
+    m_registered = false;
 }/*}}}*/
 
 Zookeeper::~Zookeeper()
@@ -56,24 +58,27 @@ Zookeeper::~Zookeeper()
     delete m_zk_log_fp; m_zk_log_fp = NULL;
     delete m_refresh_timer_trigger; m_refresh_timer_trigger = NULL;
     delete m_thread; m_thread = NULL;
+    delete m_clientid; m_clientid = NULL;
 }/*}}}*/
 
-bool Zookeeper::init(const string &zk_urls, long refresh_interval)
+bool Zookeeper::init(const string &zookeeper_urls, 
+        const string &kafka_chroot_path,
+        const string &logkafka_id,
+        long refresh_interval)
 {/*{{{*/
-    m_zk_urls = zk_urls;
+    m_zookeeper_urls = zookeeper_urls;
+    m_kafka_chroot_path = kafka_chroot_path;
+    m_logkafka_id = logkafka_id;
+
     m_zk_log_fp = fopen("/dev/null", "w");
     zoo_set_log_stream(m_zk_log_fp);
 
-    char buf[256] = {};
-    if (0 == gethostname(buf, sizeof(buf) -1)) {
-        m_hostname = buf;
-    } else {
-        LERROR << "Fail to get hostname";
-        return false;
-    }
+    m_broker_ids_path = m_kafka_chroot_path + "/brokers/ids";
+    m_logkafka_config_path = m_kafka_chroot_path + "/logkafka/config";
+    m_logkafka_client_path = m_kafka_chroot_path + "/logkafka/client";
 
-    m_client_path = LOGKAFKA_CLIENT_PATH + m_hostname;
-    m_config_path = LOGKAFKA_CONFIG_PATH + m_hostname;
+    m_client_logkafka_id_path = m_logkafka_client_path + "/" + m_logkafka_id;
+    m_config_logkafka_id_path = m_logkafka_config_path + "/" + m_logkafka_id;
 
     refresh((void *)this);
 
@@ -122,11 +127,19 @@ bool Zookeeper::connect()
         m_zhandle = NULL;
     }
 
-    LDEBUG << "Try to init zhandle";
-    m_zhandle = zookeeper_init(m_zk_urls.c_str(), 
-            globalWatcher, 30000, NULL, (void*)this, 0);
+    int flags = 0;
+    LDEBUG << "Initiating client connection"
+           << ", zookeeper urls = " << m_zookeeper_urls
+           << ", watcher = " << globalWatcher
+           << ", sessionTimeout = " << m_session_timeout_ms
+           << ", sessionId = " << (m_clientid == 0 ? 0 : m_clientid->client_id)
+           << ", sessionPasswd = " << ((m_clientid == 0) || (strncmp(m_clientid->passwd, "", 2) == 0) ? "<null>" : "<hidden>")
+           << ", context = " << (void*)this
+           << ", flags = " << flags;
+    m_zhandle = zookeeper_init(m_zookeeper_urls.c_str(), 
+            globalWatcher, m_session_timeout_ms, m_clientid, (void*)this, flags);
     if (NULL == m_zhandle) {
-        LERROR << "Fail to init zhandle, zookeeper urls " << m_zk_urls;
+        LERROR << "Fail to init zhandle, zookeeper urls " << m_zookeeper_urls;
         return false;
     }
 
@@ -191,7 +204,8 @@ bool Zookeeper::refreshConnection()
     ScopedLock l(m_zhandle_mutex);
 
     int res = zoo_state(m_zhandle);
-    if (NULL == m_zhandle || ZOK != res) {
+    if (NULL == m_zhandle || ZOO_EXPIRED_SESSION_STATE == res) {
+        LDEBUG << "Zookeeper error, " << zerror(res);
         if (!connect()) {
             LERROR << "Fail to reset zookeeper connection";
             return false;
@@ -206,26 +220,65 @@ bool Zookeeper::refreshWatchers()
     ScopedLock l(m_zhandle_mutex);
 
     /* set config change watcher */
-    if (!setWatcher(m_config_path, configChangeWatcher, (void*)this)) {
+    if (!setWatcher(m_config_logkafka_id_path, configChangeWatcher, (void*)this)) {
         LERROR << "Fail to set config change watcher";
         return false;
     }
 
     /* set broker change watcher */
-    if (!setChildrenWatcher(BROKER_IDS_PATH, brokerChangeWatcher, (void*)this)) {
+    if (!setChildrenWatcher(m_broker_ids_path, brokerChangeWatcher, (void*)this)) {
         LERROR << "Fail to set broker change watcher";
         return false;
     }
 
-    /* create EPHEMERAL node for checking whether logkafka is alive */
-    ensurePathExist(m_client_path);    
-    /* if lost connection to zk and reconnect to it, this ephemeral node may still exist */
-    zoo_delete(m_zhandle, m_client_path.c_str(), -1);
-    if (zoo_create(m_zhandle, m_client_path.c_str(), NULL, 0, &ZOO_OPEN_ACL_UNSAFE, 
-                ZOO_EPHEMERAL, NULL, 0) != ZOK)
-    {
-        LERROR << "Fail to create zookeeper path, " << m_client_path;
+    if (!ensurePathExist(m_logkafka_client_path)) {
+        LERROR << "Fail to create zookeeper path, " << m_logkafka_client_path;
         return false;
+    }
+
+    /* create EPHEMERAL node for checking whether logkafka is alive */
+    struct Stat stat;
+    int status = ZOK;
+    int len = 0;
+    char *buf = NULL;
+    buf = (char *)malloc(len + 1);
+    bzero(buf, len + 1);
+    status = zoo_get(m_zhandle, m_client_logkafka_id_path.c_str(), 0, buf, &len, &stat);
+    if (ZOK == status) {
+        if (0 == stat.ephemeralOwner) { // persistent node
+            LINFO << "Deleting persistent zookeeper path, " << m_client_logkafka_id_path;
+            if (ZOK != zoo_delete(m_zhandle, m_client_logkafka_id_path.c_str(), -1)) {
+                LERROR << "Fail to delete persistent zookeeper path, "
+                       << m_client_logkafka_id_path;
+                return false;
+            }
+        } else { // ephemeral node
+            /* if this process have never created client/logkafka_id node, 
+             * it must be created by another process, we must quit */
+            if (!m_registered) {
+                LERROR << "This error may emerge in two situations: \n"
+                       << "    1. Another logkafka process with the same id " 
+                       << m_logkafka_id << " is running.\n"
+                       << "    2. Last running process with the same id just stopped"
+                       << " a moment ago, wait for " << (m_session_timeout_ms/1000) 
+                       << " seconds and retry";
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    free(buf);
+
+    if (ZOK != status) {
+        LDEBUG << "Zookeeper get error, " << zerror(status);
+        LDEBUG << "Creating zookeeper path, " << m_client_logkafka_id_path;
+        if (zoo_create(m_zhandle, m_client_logkafka_id_path.c_str(), NULL, 0, &ZOO_OPEN_ACL_UNSAFE, 
+                    ZOO_EPHEMERAL, NULL, 0) != ZOK)
+        {
+            LERROR << "Fail to create zookeeper path, " << m_client_logkafka_id_path;
+            return false;
+        }
+
+        m_registered = true;
     }
 
     return true;
@@ -236,7 +289,7 @@ bool Zookeeper::refreshLogConfig()
     ScopedLock l(m_log_config_mutex);
 
     string log_config;
-    if (!getZnodeData(m_config_path, log_config)) {
+    if (!getZnodeData(m_config_logkafka_id_path, log_config)) {
         LERROR << "Fail to get log config";
         return false;
     }
@@ -255,6 +308,7 @@ bool Zookeeper::refreshBrokerUrls()
         return false;
     }
 
+    m_broker_urls = "";
     vector<string>::const_iterator iter;
     for (iter = ids.begin(); iter != ids.end(); ++iter) {
         string host, port;
@@ -272,6 +326,8 @@ bool Zookeeper::refreshBrokerUrls()
         m_broker_urls.append(port);
     }
 
+    LDEBUG << "Broker urls: " << m_broker_urls.c_str();
+
     return true;
 }/*}}}*/
 
@@ -284,10 +340,12 @@ string Zookeeper::getLogConfig()
 bool Zookeeper::ensurePathExist(const string& path)
 {/*{{{*/
     if (NULL == m_zhandle) {
+        LWARNING << "Zookeeper handle is NULL";
         return false;
     }
 
     if (ZOK == zoo_exists(m_zhandle, path.c_str(), 0, NULL)) {
+        LINFO << "Zookeeper node " << path << " already exists";
         return true;
     }
 
@@ -301,8 +359,8 @@ bool Zookeeper::ensurePathExist(const string& path)
 
     int ret = zoo_create(m_zhandle, path.c_str(), NULL, 0, &ZOO_OPEN_ACL_UNSAFE, 0, NULL, 0);
     if (ret != ZOK && ret != ZNODEEXISTS) {
-        LERROR << "create znode failed: " << path.c_str()
-               << ", error: " << errno2String(ret);
+        LERROR << "Create znode failed: " << path.c_str()
+               << ", error: " << zerror(ret);
         return false;
     }
 
@@ -312,6 +370,7 @@ bool Zookeeper::ensurePathExist(const string& path)
 bool Zookeeper::getZnodeData(const string& path, string &data)
 {/*{{{*/
     if (NULL == m_zhandle) {
+        LWARNING << "Zookeeper handle is NULL";
         return false;
     }
 
@@ -331,9 +390,9 @@ bool Zookeeper::getZnodeData(const string& path, string &data)
         data = string(buf);
         ret = true;
     } else {
-        LERROR << "get znode error"
+        LERROR << "Get znode error"
                << ", path: " << path 
-               << ", error:%s" << errno2String(status);
+               << ", error:%s" << zerror(status);
     }
     free(buf);
 
@@ -343,35 +402,36 @@ bool Zookeeper::getZnodeData(const string& path, string &data)
 bool Zookeeper::setWatcher(const string& path, 
         watcher_fn watcher, void *wctx)
 {/*{{{*/
-    LINFO << "try to set watcher " << path.c_str();
+    LINFO << "Try to set watcher " << path.c_str();
 
     if (NULL == m_zhandle) {
-        LERROR << "zhandle is NULL";
+        LWARNING << "Zookeeper handle is NULL";
         return false; 
     }
 
-    if (!ensurePathExist(path))
-    {
-        LERROR << "create znode " << path;
+    if (!ensurePathExist(path)) {
+        LERROR << "Create znode " << path;
         return false;
     }
+
     int len = 0;
     int ret;
-    if (ZOK != (ret = zoo_wget(m_zhandle, path.c_str(), watcher, wctx, NULL, &len, NULL)))
-    {
-        LWARNING << "set watcher failed: " << path;
+    if (ZOK != (ret = zoo_wget(m_zhandle, path.c_str(), watcher, wctx, NULL, &len, NULL))) {
+        LWARNING << "Set watcher failed: " << path;
         return false;
     }
-    LINFO << "set watcher success: " << path.c_str();
+    LINFO << "Set watcher success: " << path.c_str();
+
     return true;
 }/*}}}*/
 
 bool Zookeeper::setChildrenWatcher(const string& path, 
         watcher_fn watcher, void *wctx)
 {/*{{{*/
-    LINFO << "try to set children watcher " << path.c_str();
+    LINFO << "Try to set children watcher " << path.c_str();
 
     if (NULL == m_zhandle) {
+        LWARNING << "Zookeeper handle is NULL";
         return false; 
     }
 
@@ -382,10 +442,10 @@ bool Zookeeper::setChildrenWatcher(const string& path,
 
     int ret = ZOK;
     if (ZOK != (ret = zoo_wget_children(m_zhandle, path.c_str(), watcher, wctx, NULL))) {
-        LWARNING << "set children watcher failed: " << path.c_str();
+        LWARNING << "Set children watcher failed: " << path.c_str();
         return false;
     }
-    LINFO << "set children watcher success: " << path.c_str();
+    LINFO << "Set children watcher success: " << path.c_str();
     return true;
 }/*}}}*/
 
@@ -428,50 +488,6 @@ const char* Zookeeper::event2String(int ev)
     return "INVALID_EVENT";
 }/*}}}*/
 
-const char* Zookeeper::errno2String(int errnum)
-{/*{{{*/
-    const char* str_err = NULL;
-    switch(errnum) {
-        case ZNONODE:
-            str_err = "the parent node does not exist";
-            break;
-        case ZNOAUTH:
-            str_err = "the client does not have permission";
-            break;
-        case ZBADARGUMENTS:      
-            str_err = "invalid input parameters";
-            break;
-        case ZBADVERSION:        
-            str_err = "expected version does not match actual version";
-            break;
-        case ZINVALIDSTATE:      
-            str_err = "zhandle state is either ZOO_SESSION_EXPIRED_STATE or ZOO_AUTH_FAILED_STATE";
-            break;
-        case ZMARSHALLINGERROR:  
-            str_err = "failed to marshall a request; possibly, out of memory";
-            break;
-        case ZNOCHILDRENFOREPHEMERALS:
-            str_err = "cannot create children of ephemeral nodes";
-            break;
-        case ZSYSTEMERROR:       
-            str_err = "System and server-side errors";
-            break;
-        case ZOPERATIONTIMEOUT:  
-            str_err = "Operation timeout";
-            break;
-        case ZUNIMPLEMENTED:     
-            str_err = "Operation is unimplemented";
-            break;
-        case ZOK:     
-            str_err = "Operation is EXIT_SUCCESS";
-            break;
-        default:
-            str_err = "unknown error";
-            break;
-    }
-    return str_err;
-}/*}}}*/
-
 void Zookeeper::globalWatcher(zhandle_t* zhandle, int type, 
         int state, const char* path, void* context)
 {/*{{{*/
@@ -480,7 +496,7 @@ void Zookeeper::globalWatcher(zhandle_t* zhandle, int type,
           << ", path: " << path;
 
     if (NULL == context) {
-        LWARNING << "broker change watcher context is NULL";
+        LWARNING << "Broker change watcher context is NULL";
         return;
     }
 
@@ -510,7 +526,7 @@ void Zookeeper::brokerChangeWatcher(zhandle_t* zhandle, int type,
           << ", path: " << path;
 
     if (NULL == context) {
-        LWARNING << "broker change watcher context is NULL";
+        LWARNING << "Broker change watcher context is NULL";
         return;
     }
 
@@ -531,7 +547,7 @@ void Zookeeper::configChangeWatcher(zhandle_t* zhandle, int type,
           << ", path: " << path;
 
     if (NULL == context) {
-        LWARNING << "config change watcher context is NULL";
+        LWARNING << "Config change watcher context is NULL";
         return;
     }
 
@@ -547,22 +563,22 @@ void Zookeeper::configChangeWatcher(zhandle_t* zhandle, int type,
 bool Zookeeper::getBrokerIds(vector<string>& ids)
 {/*{{{*/
     if (NULL == m_zhandle) {
+        LWARNING << "Zookeeper handle is NULL";
         return false; 
     }
 
     struct String_vector brokerids;
 
-    int ret = zoo_get_children(m_zhandle, BROKER_IDS_PATH.c_str(), 0, &brokerids);
+    int ret = zoo_get_children(m_zhandle, m_broker_ids_path.c_str(), 0, &brokerids);
     if (ret != ZOK) {
         LERROR << "Get children error"
-               << ", path: " << BROKER_IDS_PATH
-               << ", error: " << errno2String(ret);
+               << ", path: " << m_broker_ids_path
+               << ", error: " << zerror(ret);
 
         return false;
     } else {
         ids.clear();
-        for (int i = 0; i < brokerids.count; ++i)
-        {
+        for (int i = 0; i < brokerids.count; ++i) {
             ids.push_back(brokerids.data[i]);
         }
         deallocate_String_vector(&brokerids);
@@ -573,7 +589,7 @@ bool Zookeeper::getBrokerIds(vector<string>& ids)
 bool Zookeeper::getBrokerIpAndPort(const string& brokerid, 
         string& host, string& port)
 {/*{{{*/
-    string brokerid_info_path = BROKER_IDS_PATH + "/" + brokerid;
+    string brokerid_info_path = m_broker_ids_path + "/" + brokerid;
     string brokerinfo;
     if (!getZnodeData(brokerid_info_path, brokerinfo)) {
         LERROR << "Fail to get broker info";
@@ -619,12 +635,12 @@ bool Zookeeper::setLogState( const char *buf, int buflen,
     ScopedLock l(m_zhandle_mutex);
 
     if (NULL == m_zhandle) {
-        LWARNING << "zhandle is NULL";
+        LWARNING << "Zookeeper handle is NULL";
         return false;
     }
 
     int ret = ZOK;
-    const char *client_path = m_client_path.c_str();
+    const char *client_path = m_client_logkafka_id_path.c_str();
     char *path = strndup(client_path, strlen(client_path));
     if (NULL == path) {
         LERROR << "Fail to strndup path " << client_path;

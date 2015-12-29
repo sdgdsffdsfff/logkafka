@@ -43,8 +43,8 @@ IF (NOT INSTALL_LIBRDKAFKA)
     LIBRDKAFKA_LIBRARIES
     )
     IF (LIBRDKAFKA_INCLUDE_DIR AND LIBRDKAFKA_LIBRARIES)
-    MESSAGE(STATUS "Found librdkafka libraries")
-       INCLUDE_DIRECTORIES(${LIBRDKAFKA_INCLUDE_DIR})
+        MESSAGE(STATUS "Found librdkafka libraries")
+        INCLUDE_DIRECTORIES(${LIBRDKAFKA_INCLUDE_DIR})
         MESSAGE( ${LIBRDKAFKA_LIBRARIES} )
         TARGET_LINK_LIBRARIES(logkafka ${LIBRDKAFKA_LIBRARIES} )
     ELSE (LIBRDKAFKA_INCLUDE_DIR AND LIBRDKAFKA_LIBRARIES)
@@ -62,8 +62,8 @@ IF (NOT INSTALL_LIBZOOKEEPER_MT)
     LIBZOOKEEPER_MT_LIBRARIES
     )
     IF (LIBZOOKEEPER_MT_INCLUDE_DIR AND LIBZOOKEEPER_MT_LIBRARIES)
-    MESSAGE(STATUS "Found libzookeeper_mt libraries")
-       INCLUDE_DIRECTORIES(${LIBZOOKEEPER_MT_INCLUDE_DIR})
+        MESSAGE(STATUS "Found libzookeeper_mt libraries")
+        INCLUDE_DIRECTORIES(${LIBZOOKEEPER_MT_INCLUDE_DIR})
         MESSAGE( ${LIBZOOKEEPER_MT_LIBRARIES} )
         TARGET_LINK_LIBRARIES(logkafka ${LIBZOOKEEPER_MT_LIBRARIES} )
     ELSE (LIBZOOKEEPER_MT_INCLUDE_DIR AND LIBZOOKEEPER_MT_LIBRARIES)
@@ -81,8 +81,8 @@ IF (NOT INSTALL_LIBUV)
     LIBUV_LIBRARIES
     )
     IF (LIBUV_INCLUDE_DIR AND LIBUV_LIBRARIES)
-    MESSAGE(STATUS "Found libuv libraries")
-       INCLUDE_DIRECTORIES(${LIBUV_INCLUDE_DIR})
+        MESSAGE(STATUS "Found libuv libraries")
+        INCLUDE_DIRECTORIES(${LIBUV_INCLUDE_DIR})
         MESSAGE( ${LIBUV_LIBRARIES} )
         MESSAGE( ${LIBUV_INCLUDE_DIR} )
         TARGET_LINK_LIBRARIES(logkafka ${LIBUV_LIBRARIES} )
@@ -92,6 +92,28 @@ IF (NOT INSTALL_LIBUV)
 
 ENDIF (NOT INSTALL_LIBUV)
 
+# pcre2
+IF (NOT INSTALL_LIBPCRE2)
+
+    FIND_PACKAGE( libpcre2 REQUIRED)
+    MARK_AS_ADVANCED(
+    LIBPCRE2_INCLUDE_DIR
+    LIBPCRE2_LIBRARIES
+    )
+    IF (LIBPCRE2_INCLUDE_DIR AND LIBPCRE2_LIBRARIES)
+        MESSAGE(STATUS "Found libpcre2 libraries")
+        INCLUDE_DIRECTORIES(${LIBPCRE2_INCLUDE_DIR})
+        MESSAGE( ${LIBPCRE2_LIBRARIES} )
+        MESSAGE( ${LIBPCRE2_INCLUDE_DIR} )
+        TARGET_LINK_LIBRARIES(logkafka ${LIBPCRE2_LIBRARIES} )
+    ELSE (LIBPCRE2_INCLUDE_DIR AND LIBPCRE2_LIBRARIES)
+        MESSAGE(FATAL_ERROR "Failed to find libpcre2 libraries")
+        MESSAGE(LIBPCRE2_INCLUDE_DIR)
+        MESSAGE(LIBPCRE2_LIBRARIES)
+    ENDIF (LIBPCRE2_INCLUDE_DIR AND LIBPCRE2_LIBRARIES)
+
+ENDIF (NOT INSTALL_LIBPCRE2)
+
 # pthread
 FIND_PACKAGE( libpthread REQUIRED)
 MARK_AS_ADVANCED(
@@ -99,8 +121,8 @@ LIBPTHREAD_INCLUDE_DIR
 LIBPTHREAD_LIBRARIES
 )
 IF (LIBPTHREAD_INCLUDE_DIR AND LIBPTHREAD_LIBRARIES)
-MESSAGE(STATUS "Found libpthread libraries")
-   INCLUDE_DIRECTORIES(${LIBPTHREAD_INCLUDE_DIR})
+    MESSAGE(STATUS "Found libpthread libraries")
+    INCLUDE_DIRECTORIES(${LIBPTHREAD_INCLUDE_DIR})
     MESSAGE( ${LIBPTHREAD_LIBRARIES} )
     TARGET_LINK_LIBRARIES(logkafka ${LIBPTHREAD_LIBRARIES} )
 ELSE (LIBPTHREAD_INCLUDE_DIR AND LIBPTHREAD_LIBRARIES)
@@ -108,19 +130,25 @@ ELSE (LIBPTHREAD_INCLUDE_DIR AND LIBPTHREAD_LIBRARIES)
 ENDIF (LIBPTHREAD_INCLUDE_DIR AND LIBPTHREAD_LIBRARIES)
 
 # rt ( libkafka )
-FIND_PACKAGE( librt REQUIRED)
-MARK_AS_ADVANCED(
-LIBRT_INCLUDE_DIR
-LIBRT_LIBRARIES
-)
-IF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
-MESSAGE(STATUS "Found librt libraries")
-   INCLUDE_DIRECTORIES(${LIBRT_INCLUDE_DIR})
-    MESSAGE( ${LIBRT_LIBRARIES} )
-    TARGET_LINK_LIBRARIES(logkafka ${LIBRT_LIBRARIES} )
-ELSE (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
-    MESSAGE(FATAL_ERROR "Failed to find librt libraries")
-ENDIF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+IF (UNIX AND NOT APPLE)
+    FIND_PACKAGE( librt REQUIRED)
+    MARK_AS_ADVANCED(
+    LIBRT_INCLUDE_DIR
+    LIBRT_LIBRARIES
+    )
+    IF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+        MESSAGE(STATUS "Found librt libraries")
+        INCLUDE_DIRECTORIES(${LIBRT_INCLUDE_DIR})
+        MESSAGE( ${LIBRT_LIBRARIES} )
+        TARGET_LINK_LIBRARIES(logkafka ${LIBRT_LIBRARIES} )
+    ELSE (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+        MESSAGE(FATAL_ERROR "Failed to find librt libraries")
+    ENDIF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+ELSEIF (WIN32)
+  # Windows-specific includes or actions
+ELSEIF (APPLE)
+  # ...
+ENDIF (UNIX AND NOT APPLE)
 
 # z ( libkafka )
 FIND_PACKAGE( libz REQUIRED)
@@ -129,8 +157,8 @@ LIBZ_INCLUDE_DIR
 LIBZ_LIBRARIES
 )
 IF (LIBZ_INCLUDE_DIR AND LIBZ_LIBRARIES)
-MESSAGE(STATUS "Found libz libraries")
-   INCLUDE_DIRECTORIES(${LIBZ_INCLUDE_DIR})
+    MESSAGE(STATUS "Found libz libraries")
+    INCLUDE_DIRECTORIES(${LIBZ_INCLUDE_DIR})
     MESSAGE( ${LIBZ_LIBRARIES} )
     TARGET_LINK_LIBRARIES(logkafka ${LIBZ_LIBRARIES} )
 ELSE (LIBZ_INCLUDE_DIR AND LIBZ_LIBRARIES)
@@ -146,81 +174,20 @@ include(ExternalProject)
 
 # librdkafka 
 IF (INSTALL_LIBRDKAFKA)
-
-    MESSAGE(STATUS "installing librdkafka ...")
-    CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
-
-    ExternalProject_Add(project_librdkafka
-        GIT_REPOSITORY https://github.com/edenhill/librdkafka.git
-        GIT_TAG 0.8.6
-        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/librdkafka
-        CONFIGURE_COMMAND cd <SOURCE_DIR> && ./configure --prefix=<INSTALL_DIR>
-        BUILD_COMMAND cd <SOURCE_DIR> && make
-        INSTALL_COMMAND cd <SOURCE_DIR> && make install
-    )
-
-    ExternalProject_Get_Property(project_librdkafka install_dir)
-
-    #add_library(librdkafka SHARED IMPORTED)
-    #set_property(TARGET librdkafka PROPERTY IMPORTED_LOCATION ${install_dir}/lib/librdkafka.so)
-    add_library(librdkafka STATIC IMPORTED)
-    set_property(TARGET librdkafka PROPERTY IMPORTED_LOCATION ${install_dir}/lib/librdkafka.a)
-    add_dependencies(librdkafka project_librdkafka)
-
-    TARGET_LINK_LIBRARIES(logkafka librdkafka)
-    INCLUDE_DIRECTORIES(${install_dir}/include)
-
+    INCLUDE(Buildlibrdkafka)
 ENDIF (INSTALL_LIBRDKAFKA)
 
 # libzookeeper_mt 
 IF (INSTALL_LIBZOOKEEPER_MT)
-
-    MESSAGE(STATUS "installing libzookeeper_mt ...")
-    CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
-
-    ExternalProject_Add(project_libzookeeper_mt
-        URL http://archive.apache.org/dist/zookeeper/zookeeper-3.4.6/zookeeper-3.4.6.tar.gz
-        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/libzookeeper_mt
-        CONFIGURE_COMMAND cd <SOURCE_DIR>/src/c && ./configure --prefix=<INSTALL_DIR>
-        BUILD_COMMAND cd <SOURCE_DIR>/src/c && make -j4
-        INSTALL_COMMAND cd <SOURCE_DIR>/src/c && make install
-    )
-
-    ExternalProject_Get_Property(project_libzookeeper_mt install_dir)
-
-    add_library(libzookeeper_mt STATIC IMPORTED)
-    set_property(TARGET libzookeeper_mt PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libzookeeper_mt.a)
-    add_dependencies(libzookeeper_mt project_libzookeeper_mt)
-
-    TARGET_LINK_LIBRARIES(logkafka libzookeeper_mt)
-    INCLUDE_DIRECTORIES(${install_dir}/include)
-
+    INCLUDE(Buildlibzookeeper_mt)
 ENDIF (INSTALL_LIBZOOKEEPER_MT)
 
 # libuv 
 IF (INSTALL_LIBUV)
-
-    MESSAGE(STATUS "installing libuv ...")
-    CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
-
-    ExternalProject_Add(project_libuv
-        GIT_REPOSITORY https://github.com/libuv/libuv.git
-        GIT_TAG v1.6.0
-        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/libuv
-        CONFIGURE_COMMAND cd <SOURCE_DIR> && sh autogen.sh && ./configure --prefix=<INSTALL_DIR>
-        BUILD_COMMAND cd <SOURCE_DIR> && make
-        INSTALL_COMMAND cd <SOURCE_DIR> && make install
-    )
-
-    ExternalProject_Get_Property(project_libuv install_dir)
-
-    #add_library(libuv SHARED IMPORTED)
-    #set_property(TARGET libuv PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libuv.so)
-    add_library(libuv STATIC IMPORTED)
-    set_property(TARGET libuv PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libuv.a)
-    add_dependencies(libuv project_libuv)
-
-    TARGET_LINK_LIBRARIES(logkafka libuv)
-    INCLUDE_DIRECTORIES(${install_dir}/include)
-
+    INCLUDE(Buildlibuv)
 ENDIF (INSTALL_LIBUV)
+
+# libpcre2
+IF (INSTALL_LIBPCRE2)
+    INCLUDE(Buildlibpcre2)
+ENDIF (INSTALL_LIBPCRE2)

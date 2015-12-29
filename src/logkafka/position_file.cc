@@ -94,19 +94,24 @@ PositionFile* PositionFile::parse(FILE *file)
     fseek(file, 0, SEEK_SET);
     long fsize = getFsize(file);
 
-    char *buf = (char *)malloc(fsize);
+    char *buf = (char *)malloc(fsize + 1);
     if (NULL == buf) {
-        LERROR << "Fail to malloc " << fsize << " bytes";
+        LERROR << "Fail to malloc " << (fsize + 1) << " bytes";
         return NULL;
     }
 
-    char *line;
-    while (NULL != (line = fgets(buf, fsize, file))) {
+    bzero(buf, fsize + 1);
+
+    char *line = NULL;
+    while (NULL != (line = fgets(buf, fsize + 1, file))) {
         off_t pos;
         ino_t inode;
         PositionEntryKey pek;
 
         string line_str(line);
+
+        if(line_str == "") break;
+
         if (!PositionFile::parseLine(line_str, pek, pos, inode))
             continue;
 
@@ -131,6 +136,50 @@ bool PositionFile::parseLine(string line,
     string &path = pek.path;
 
     bool is_match = true;
+
+    /* Use pcre2 for better portability */
+#ifdef LOGKAFKA_PCRE2
+    pcre2_code *re;
+    pcre2_match_data *match_data;
+    PCRE2_SIZE erroffset, *ovector;
+    int errorcode;
+    int rc;
+    PCRE2_SPTR pattern = (PCRE2_SPTR)"^([^\t]+)\t([^\t]+)\t([0-9a-fA-F]+)\t([0-9a-fA-F]+)$";
+    PCRE2_SPTR value = (PCRE2_SPTR)line.c_str(); 
+
+    re = pcre2_compile(pattern, -1, 0, &errorcode, &erroffset, NULL);
+    if (re == NULL) {
+        PCRE2_UCHAR8 buffer[120];
+        (void)pcre2_get_error_message(errorcode, buffer, 120);
+        /* Handle error */
+        LERROR << "Fail to compile pattern, " << buffer;
+        return false;
+    }
+
+    match_data = pcre2_match_data_create(20, NULL);
+    rc = pcre2_match(re, value, -1, 0, 0, match_data, NULL);
+    if (rc > 0) {
+        ovector = pcre2_get_ovector_pointer(match_data);
+        /* Use ovector to get matched strings */
+        PCRE2_SIZE i;
+        i = 1; path_pattern = line.substr(ovector[2*i], ovector[2*i+1] - ovector[2*i]);
+        i = 2; path = line.substr(ovector[2*i], ovector[2*i+1] - ovector[2*i]);
+        i = 3; string pos_str = line.substr(ovector[2*i], ovector[2*i+1] - ovector[2*i]);
+        pos = hexstr2num(pos_str.c_str(), -1);
+        i = 4; string inode_str = line.substr(ovector[2*i], ovector[2*i+1] - ovector[2*i]);
+        inode = hexstr2num(inode_str.c_str(), 0);
+    } else {
+        LWARNING << "Fail to match pattern, rc: " << rc << ", line: " << line;
+        is_match = false;
+        path_pattern = "";
+        path = "";
+        pos = -1;
+        inode = INO_NONE;
+    }
+
+    pcre2_match_data_free(match_data);
+    pcre2_code_free(re);
+#else
     string pattern = "^([^\t]+)\t([^\t]+)\t([0-9a-fA-F]+)\t([0-9a-fA-F]+)$";
 
     int cflags = REG_EXTENDED | REG_NEWLINE;
@@ -172,6 +221,7 @@ bool PositionFile::parseLine(string line,
         pos = -1;
         inode = INO_NONE;
     }
+#endif
 
     return is_match;
 }/*}}}*/
@@ -183,20 +233,25 @@ bool PositionFile::compact(FILE *file)
     fseek(file, 0, SEEK_SET);
     long fsize = getFsize(file);
 
-    char *buf = reinterpret_cast<char *>(malloc(fsize));
+    char *buf = reinterpret_cast<char *>(malloc(fsize + 1));
     if (NULL == buf) {
-        LERROR << "Fail to malloc " << fsize << " bytes";
+        LERROR << "Fail to malloc " << (fsize + 1) << " bytes";
         return false;
     }
 
-    char *line;
+    bzero(buf, fsize + 1);
+
+    char *line = NULL;
     map<string, string> existent_entries;
-    while (NULL != (line = fgets(buf, fsize, file))) {
+    while (NULL != (line = fgets(buf, fsize + 1, file))) {
         off_t pos;
         ino_t inode;
         PositionEntryKey pek;
 
         string line_str(line);
+
+        if(line_str == "") break;
+        
         if (!PositionFile::parseLine(line_str, pek, pos, inode)) {
             continue;
         }

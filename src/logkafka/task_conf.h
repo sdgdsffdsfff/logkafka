@@ -27,6 +27,7 @@
 #include <string>
 
 #include "base/tools.h"
+#include "logkafka/config.h"
 
 #include "easylogging/easylogging++.h"
 
@@ -34,7 +35,7 @@ using namespace std;
 
 namespace logkafka {
 
-struct LogConf{
+struct LogConf {
     /* log file path, example: /usr/local/apache2/logs/access_log.%Y%m%d */
     string log_path;
 
@@ -48,11 +49,27 @@ struct LogConf{
 
     bool read_from_head;
 
+    char line_delimiter;
+
+    bool remove_delimiter;
+
+    LogConf()
+    {/*{{{*/
+        log_path = "";
+        follow_last = true;
+        batchsize = 200;
+        read_from_head = true;
+        line_delimiter = '\n';
+        remove_delimiter = true;
+    }/*}}}*/
+
     bool operator==(const LogConf& hs) const
     {/*{{{*/
         return (log_path == hs.log_path) &&
             (follow_last == hs.follow_last) &&
-            (batchsize == hs.batchsize);
+            (batchsize == hs.batchsize) &&
+            (line_delimiter == hs.line_delimiter) &&
+            (remove_delimiter == hs.remove_delimiter);
     };/*}}}*/
 
     bool operator!=(const LogConf& hs) const
@@ -61,14 +78,16 @@ struct LogConf{
     };/*}}}*/
 
     friend ostream& operator << (ostream& os, const LogConf& lc)
-    {
+    {/*{{{*/
         os << "log path: " << lc.log_path
            << "follow last" << lc.follow_last
            << "batchsize" << lc.batchsize
-           << "read from head" << lc.read_from_head;
+           << "read from head" << lc.read_from_head
+           << "line delimiter" << lc.line_delimiter
+           << "remove delimiter" << lc.remove_delimiter;
 
         return os;
-    }
+    }/*}}}*/
 
     bool isLegal()
     {/*{{{*/
@@ -85,6 +104,32 @@ struct LogConf{
     }/*}}}*/
 };
 
+struct FilterConf {
+    string regex_filter_pattern;
+
+    FilterConf()
+    {/*{{{*/
+        regex_filter_pattern = "";
+    }/*}}}*/
+
+    bool operator==(const FilterConf& hs) const
+    {/*{{{*/
+        return (regex_filter_pattern == hs.regex_filter_pattern);
+    };/*}}}*/
+
+    bool operator!=(const FilterConf& hs) const
+    {/*{{{*/
+        return !operator==(hs);
+    };/*}}}*/
+
+    friend ostream& operator << (ostream& os, const FilterConf& fc)
+    {/*{{{*/
+        os << "regex filter pattern: " << fc.regex_filter_pattern;
+
+        return os;
+    }/*}}}*/
+};
+
 struct KafkaTopicConf {
     string brokers;
     string topic;
@@ -95,7 +140,7 @@ struct KafkaTopicConf {
     int message_timeout_ms;
     
     KafkaTopicConf()
-    {
+    {/*{{{*/
         brokers = "";
         topic = "";
         compression_codec = "none";
@@ -103,7 +148,7 @@ struct KafkaTopicConf {
         key = "";
         partition = -1;
         message_timeout_ms = 0;
-    }
+    }/*}}}*/
 
     bool operator==(const KafkaTopicConf& hs) const
     {/*{{{*/
@@ -122,14 +167,14 @@ struct KafkaTopicConf {
     };/*}}}*/
 
     friend ostream& operator << (ostream& os, const KafkaTopicConf& ktc)
-    {
+    {/*{{{*/
         return os;
-    }
+    }/*}}}*/
 
     bool isLegal()
-    {
+    {/*{{{*/
         return true;
-    }
+    }/*}}}*/
 };
 
 struct TaskConf
@@ -139,27 +184,30 @@ struct TaskConf
 
     LogConf log_conf;
     KafkaTopicConf kafka_topic_conf;
+    FilterConf filter_conf;
 
     bool operator==(const TaskConf& hs) const
     {/*{{{*/
         return (valid == hs.valid) &&
             (log_conf == hs.log_conf) &&
-            (kafka_topic_conf == hs.kafka_topic_conf);
+            (kafka_topic_conf == hs.kafka_topic_conf) &&
+            (filter_conf == hs.filter_conf);
     };/*}}}*/
 
     friend ostream& operator << (ostream& os, const TaskConf& tc)
-    {
+    {/*{{{*/
         os << "valid: " << tc.valid
            << "log conf" << tc.log_conf 
-           << "kafka topic conf" << tc.kafka_topic_conf;
+           << "kafka topic conf" << tc.kafka_topic_conf
+           << "filter conf" << tc.filter_conf;
 
         return os;
-    }
+    }/*}}}*/
 
     bool isLegal()
-    {
+    {/*{{{*/
         return log_conf.isLegal() && kafka_topic_conf.isLegal();
-    }
+    }/*}}}*/
 };
 
 struct TaskStat
@@ -180,8 +228,12 @@ struct TaskStat
 
 struct Task
 {
+    Task(unsigned long path_queue_max_size): path_queue_max_size(path_queue_max_size) {};
+
+    unsigned long path_queue_max_size;
     TaskConf conf;
     TaskStat stat;
+
     string getPath() { return getFirstPath(); };
     string getFirstPath() { return stat.getPath(); };
     void delFirstPath() { stat.paths.pop(); };
@@ -194,6 +246,11 @@ struct Task
         } else {
             string last_path = stat.paths.back();
             if (path != last_path) {
+                if (stat.paths.size() >= path_queue_max_size) {
+                    LERROR << "Fail to add path " << path 
+                           << ", path queue size >= " << path_queue_max_size;
+                    return false;
+                }
                 stat.paths.push(path);
                 LINFO << "Add path " << path;
                 return true;

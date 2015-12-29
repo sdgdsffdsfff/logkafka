@@ -1,18 +1,25 @@
 ## logkafka - Collect logs and send lines to Apache Kafka 0.8
 
+## Introduction [中文文档](https://github.com/Qihoo360/logkafka/wiki)
+
 logkafka sends log file contents to kafka 0.8 line by line. It treats one line of file as one kafka message.
 
 See [FAQ](docs/FAQ.md) if you wanna deploy it in production environment.
 
 ![logkafka](docs/imgs/logkafka.png?raw=true "logkafka")
 
-## Supports
+[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/Qihoo360/logkafka?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
+
+## Features
 
 * log collecting configuration management with zookeeper
-* log path with timeformat (collect files chronologically)
+* [log path with timeformat (collect files chronologically)](docs/Features.md#Log Path Pattern)
 * log file rotating
 * batching messages
 * compression (none, gzip, snappy)
+* [message regex filter](docs/Features.md#Regex Filter)
+* [user-defined line delimiter](docs/Features.md#Line Delimiter)
+* [user-defined monitor](docs/Features.md#Monitor)
 
 ## Differences with other log aggregation and monitoring tools 
 The main differences with **flume**, **fluentd**, **logstash** are
@@ -28,6 +35,15 @@ The main differences with **flume**, **fluentd**, **logstash** are
   flume, fluentd, logstash all have INPUT type 'tail', they collecting all files simultaneously, without considering chronological order of log files.
   
   logkafka will collect files chronologically.
+  
+## Users of logkafka
+
+* [Qihoo360](http://www.360totalsecurity.com/features/360-total-security-mac/) - Collecting openstack operation logs
+* [ICBC](http://www.icbc.com.cn/ICBC/sy/default.htm) - Collecting ssdb operation log
+* *Let [me](zheolong@126.com) know if you are using logkafka.*
+
+[details...](docs/Users.md)
+
 
 ## Requirements
 
@@ -37,13 +53,15 @@ The main differences with **flume**, **fluentd**, **logstash** are
 
 * libuv
 
+* libpcre2 
+
 * PHP 5.3 and above (with zookeeper extension)
 
 ## Build
 
 Two methods, choose accordingly.
 
-1. Install [librdkafka](docs/install-librdkafka.md), [libzookeeper_mt](docs/install-libzookeeper_mt.md), [libuv](docs/install-libuv.md) manually, then
+1. Install [librdkafka(>0.8.6)](docs/install-librdkafka.md), [libzookeeper_mt](docs/install-libzookeeper_mt.md), [libuv(>v1.6.0)](docs/install-libuv.md), [libpcre2(>10.20)](docs/install-libpcre2.md) manually, then
 
 	```
 	cmake -H. -B_build -DCMAKE_INSTALL_PREFIX=_install
@@ -55,7 +73,11 @@ Two methods, choose accordingly.
 2. Just let cmake handle the dependencies ( **cmake version >= 3.0.2** ).
 
 	```
-	cmake -H. -B_build -DCMAKE_INSTALL_PREFIX=_install -DINSTALL_LIBRDKAFKA=ON -DINSTALL_LIBZOOKEEPER_MT=ON  -DINSTALL_LIBUV=ON
+	cmake -H. -B_build -DCMAKE_INSTALL_PREFIX=_install \
+	                   -DINSTALL_LIBRDKAFKA=ON \
+	                   -DINSTALL_LIBZOOKEEPER_MT=ON \
+	                   -DINSTALL_LIBUV=ON \
+	                   -DINSTALL_LIBPCRE2=ON
 	cd _build
 	make -j4
 	make install
@@ -63,7 +85,7 @@ Two methods, choose accordingly.
 
 ## Usage
 
-Note: If you already have kafka and zookeeper installed, you can start from step 2 and replace zk urls with your own in the following steps, default is ```127.0.0.1:2181```.
+Note: If you already have kafka and zookeeper installed, you can start from step 2 and replace zk connection string with your own in the following steps, default is ```127.0.0.1:2181```.
 
 1. Deploy Kafka and Zookeeper in local host
     
@@ -75,26 +97,56 @@ Note: If you already have kafka and zookeeper installed, you can start from step
 
    * local conf
    
-   _install/conf/logkafka.conf
+   Customizing _install/conf/logkafka.conf to your needs
    
    ```
-    zk_urls     = 127.0.0.1:2181             # zookeeper urls
-    pos_path       = ../data/pos.myClusterName  # position saving file, relative to the dir of this file
-    line_max_bytes = 1048576                    # 1M
-    stat_silent_max_ms = 10000                  # 10s
-    zookeeper_upload_interval = 10000           # 10s, interval of uploading processing state to zookeeper
-    refresh_interval = 30000                    # 30s, refresh log file list every 30s
+    zookeeper.connect = 127.0.0.1:2181
+    pos.path       = ../data/pos.myClusterName
+    line.max.bytes = 1048576
     ...
    ```
    
    * run
+
+   Run in the foreground
    
    ```
    _install/bin/logkafka -f _install/conf/logkafka.conf -e _install/conf/easylogging.conf
    ```
+
+   Or as a daemon
+
+   ```
+   _install/bin/logkafka --daemon -f _install/conf/logkafka.conf -e _install/conf/easylogging.conf
+   ```
    
 3. Configs Management
 
+  Use UI or command line tools.
+
+  3.1 UI (with kafka-manger)
+
+  We add logkafka as one kafka-manager extension. You need to [install and start kafka-manager](https://github.com/zheolong/kafka-manager/), add cluster with logkafka enabled, then you can manage logkafka with the 'Logkafka' menu.
+  
+  * How to add cluster with logkafka enabled
+
+  ![logkafka](docs/imgs/add_cluster.png?raw=true "add cluster")
+  
+  * How to create new config
+
+  ![logkafka](docs/imgs/create_logkafka.png?raw=true "create logkafka")
+
+  * How to delete configs
+
+  ![logkafka](docs/imgs/delete_logkafka.png?raw=true "delete logkafka")
+
+  * How to list configs and monitor sending progress
+  
+  ![logkafka](docs/imgs/list_logkafka.png?raw=true "list logkafka")
+
+
+  3.2 Command line tools
+  
   We use php script (tools/log_config.php) to create/delete/list collecting configurations in zookeeper nodes.
   
   If you do not know how to install php zookeeper module, check [this](docs/install-php-zookeeper-extension.md).
@@ -104,10 +156,14 @@ Note: If you already have kafka and zookeeper installed, you can start from step
    
      Example: 
    
-     Collect apache access log on host "test.qihoo.net" to kafka brokers with zk urls "127.0.0.1:2181". The topic is "apache_access_log".
+     Collect apache access log on host "test.qihoo.net" to kafka brokers with zk connection string "127.0.0.1:2181". The topic is "apache_access_log".
    
 	   ```
-	   php tools/log_config.php --create --zookeeper=127.0.0.1:2181 --hostname=test.qihoo.net --log_path=/usr/local/apache2/logs/access_log.%Y%m%d --topic=apache_access_log
+	   php tools/log_config.php --create \
+	                            --zookeeper_connect=127.0.0.1:2181 \
+	                            --logkafka_id=test.qihoo.net \
+	                            --log_path=/usr/local/apache2/logs/access_log.%Y%m%d \
+	                            --topic=apache_access_log
 	   ```
 	   
 	   Note: 
@@ -116,25 +172,28 @@ Note: If you already have kafka and zookeeper installed, you can start from step
    * How to delete configs
    
 	   ```
-	   php tools/log_config.php --delete --zookeeper=127.0.0.1:2181 --hostname=test.qihoo.net --log_path=/usr/local/apache2/logs/access_log.%Y%m%d
+	   php tools/log_config.php --delete \
+	                            --zookeeper_connect=127.0.0.1:2181 \
+	                            --logkafka_id=test.qihoo.net \
+	                            --log_path=/usr/local/apache2/logs/access_log.%Y%m%d
 	   ```
       
    * How to list configs and monitor sending progress
    
 	   ```
-	   php tools/log_config.php --list --zookeeper=127.0.0.1:2181
+	   php tools/log_config.php --list --zookeeper_connect=127.0.0.1:2181
 	   ```
 	   
 	   shows 
 	   
 	   ```
-	   hostname: test.qihoo.net
+	   logkafka_id: test.qihoo.net
 		log_path: /usr/local/apache2/logs/access_log.%Y%m%d
 		Array
 		(
 		    [conf] => Array
 		        (
-		            [hostname] => test.qihoo.net
+		            [logkafka_id] => test.qihoo.net
 		            [log_path] => /usr/local/apache2/logs/access_log.%Y%m%d
 		            [topic] => apache_access_log
 		            [partition] => -1
@@ -150,8 +209,7 @@ Note: If you already have kafka and zookeeper installed, you can start from step
 		)
 	   ```
 	   
-	More details about configuration management, see `php tools/log_config.php --help`.  
- 
+	More details about configuration management, see `php tools/log_config.php --help`.
    
 ## Benchmark
 
@@ -187,7 +245,9 @@ Make sure you have lcov installed, check [this](http://ltp.sourceforge.net/cover
 compile with unittest and debug type
 
 ```
-cmake -H. -B_build -DCMAKE_INSTALL_PREFIX=_install -Dtest=ON -DCMAKE_BUILD_TYPE=Debug
+cmake -H. -B_build -DCMAKE_INSTALL_PREFIX=_install \
+                   -Dtest=ON \
+                   -DCMAKE_BUILD_TYPE=Debug
 cd _build
 make
 make logkafka_coverage  # run unittest
@@ -195,5 +255,5 @@ make logkafka_coverage  # run unittest
 
 ## TODO
 
-1. Other Input Source (kafka 0.7)
+1. Regex filter
 2. Multi-line mode

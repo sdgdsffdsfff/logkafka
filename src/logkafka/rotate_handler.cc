@@ -22,6 +22,7 @@
 #include "logkafka/rotate_handler.h"
 
 #include "base/common.h"
+#include "base/tools.h"
 
 namespace logkafka {
 
@@ -41,15 +42,14 @@ bool RotateHandler::init(string path,
 void RotateHandler::onNotify(void *arg)
 {
     RotateHandler *rh = (RotateHandler *)arg;
-    ScopedLock l(rh->m_rotate_handler_mutex);
 
     if (NULL == rh) {
-        LERROR << "rotate handler is NULL";
+        LERROR << "Rotate handler is NULL";
         return;
     }
 
     if (NULL == rh->m_rotate_func) {
-        LERROR << "rotate handler callback function is NULL";
+        LERROR << "Rotate handler callback function is NULL";
         return;
     }
 
@@ -67,24 +67,60 @@ void RotateHandler::onNotify(void *arg)
     }
 
     if (rh->m_inode != inode || fsize < rh->m_fsize) {
-        LDEBUG << "Try to open file " << rh->m_path;
+        LINFO << "Opening file " << rh->m_path;
+
         file = fopen(rh->m_path.c_str(), "r");
         if (file == NULL) {
-            LERROR << "Fail to open file " << rh->m_path;
+            LWARNING << "Fail to open file " << rh->m_path << ", " << strerror(errno);
             return;
         }
 
-        (*rh->m_rotate_func)(rh->m_rotate_func_arg, file);
-        file = NULL;
+        LDEBUG << "Finish opening file"
+               << ", fd: " << fileno(file)
+               << ", inode: " << getInode(file);
+
+        /* we can update inode and fsize of rotate handler only when rotating done */
+        if (!(*rh->m_rotate_func)(rh->m_rotate_func_arg, file)) {
+            LWARNING << "Fail to rotate " << rh->m_path;
+        } else {
+            LINFO << "Finish rotating " << rh->m_path;
+            rh->updateLastRotateTime();
+            rh->m_inode = inode;
+            rh->m_fsize = fsize;
+            file = NULL;
+        }
+    } else if (fsize > rh->m_fsize) {
+        /* inode is the same, and file is not truncated, we should update recorded file size */
+        rh->m_fsize = fsize;
     }
 
-    rh->m_inode = inode;
-    rh->m_fsize = fsize;
-
     if (NULL != file) {
+        LDEBUG << "Closing file"
+               << ", fd: " << fileno(file)
+               << ", inode: " << getInode(file);
         fclose(file); file = NULL;
     }
 }
 
+void RotateHandler::updateLastRotateTime()
+{/*{{{*/
+    if (0 == pthread_mutex_trylock(&m_last_rotate_time_mutex.mutex())) {
+        if (0 != gettimeofday(&m_last_rotate_time, NULL)) {
+            LERROR << "Fail to get time";
+        }
+        pthread_mutex_unlock(&m_last_rotate_time_mutex.mutex());
+    }
+}/*}}}*/
+
+bool RotateHandler::getLastRotateTime(struct timeval &tv)
+{/*{{{*/
+    bool res = false;
+    if (0 == pthread_mutex_trylock(&m_last_rotate_time_mutex.mutex())) {
+        tv = m_last_rotate_time;
+        pthread_mutex_unlock(&m_last_rotate_time_mutex.mutex());
+        res = true;
+    }
+    return res;
+}/*}}}*/
 
 } // namespace logkafka

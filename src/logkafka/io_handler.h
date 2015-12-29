@@ -42,7 +42,7 @@ using namespace base;
 
 namespace logkafka {
 
-typedef bool (*ReceiveFunc)(void *, vector<string> &);
+typedef bool (*ReceiveFunc)(void *, void *, const vector<string> &);
 
 class IOHandler
 {
@@ -53,11 +53,16 @@ class IOHandler
                   PositionEntry *position_entry,
                   unsigned int max_line_at_once,
                   unsigned int line_max_bytes,
-                  void *receive_func_arg,
+                  unsigned int read_max_bytes,
+                  char line_delimiter,
+                  bool remove_delimiter,
+                  void *filter,
+                  void *output,
                   ReceiveFunc receiveLines);
         void close();
         static void onNotify(void *arg);
         bool getLastIOTime(struct timeval &tv);
+        long getFileInode();
         long getFileSize();
         long getFilePos();
 
@@ -67,20 +72,32 @@ class IOHandler
 
     private:
         void updateLastIOTime();
+        bool getLastBufferStuckTime(struct timeval &tv);
+        void updateLastBufferStuckTime();
+        bool isBufferStuck();
 
     private:
         unsigned int m_max_line_at_once;
         unsigned int m_line_max_bytes;
+        unsigned int m_buffer_max_bytes;
+        unsigned long m_buffer_stuck_max_ms;
+        bool m_buffer_last_segment;
         ReceiveFunc m_receive_func;
-        void *m_receive_func_arg;
+        void *m_filter;
+        void *m_output;
 
-        char *m_line;
+        char *m_buffer;
+        size_t m_buffer_len;
+        char m_line_delimiter;
+        bool m_remove_delimiter;
+        vector<string> m_lines;
 
         struct timeval m_last_io_time;
+        struct timeval m_last_buffer_stuck_time;
 
         Mutex m_last_io_time_mutex;
+        Mutex m_last_buffer_stuck_time_mutex;
         Mutex m_file_mutex;
-        Mutex m_io_handler_mutex;
 };
 
 } // namespace logkafka

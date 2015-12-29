@@ -33,6 +33,8 @@ TailWatcher::TailWatcher()
     m_stat_trigger = NULL;
     m_rotate_handler = NULL;
     m_output = NULL;
+    m_manager = NULL;
+    m_filter = NULL;
 }/*}}}*/
 
 TailWatcher::~TailWatcher()
@@ -41,10 +43,16 @@ TailWatcher::~TailWatcher()
     delete m_timer_trigger; m_timer_trigger = NULL;
     m_stat_trigger->close();
     delete m_stat_trigger; m_stat_trigger = NULL;
-
-    delete m_io_handler; m_io_handler = NULL;
-    delete m_rotate_handler; m_rotate_handler = NULL;
+    {
+        ScopedLock l(m_rotate_handler_mutex);
+        delete m_rotate_handler; m_rotate_handler = NULL;
+    }
+    {
+        ScopedLock l(m_io_handler_mutex);
+        delete m_io_handler; m_io_handler = NULL;
+    }
     delete m_output; m_output = NULL;
+    delete m_filter; m_filter = NULL;
 }/*}}}*/
 
 bool TailWatcher::init(uv_loop_t *loop, 
@@ -55,10 +63,13 @@ bool TailWatcher::init(uv_loop_t *loop,
         bool read_from_head,
         unsigned long max_line_at_once,
         unsigned long line_max_bytes, 
-        bool enabled,
+        unsigned long read_max_bytes,
+        char line_delimiter,
+        bool remove_delimiter,
         UpdateFunc updateWatcher,
         ReceiveFunc receiveLines,
         TaskConf conf,
+        Manager *manager,
         Output *output)
 {/*{{{*/
     /* We will not close watch until stat change time expired m_stat_silent_max_ms, 
@@ -71,13 +82,22 @@ bool TailWatcher::init(uv_loop_t *loop,
     m_read_from_head = read_from_head;
     m_max_line_at_once = max_line_at_once;
     m_line_max_bytes = line_max_bytes;
-    m_enabled = enabled;
+    m_read_max_bytes = read_max_bytes;
+    m_line_delimiter = line_delimiter;
+    m_remove_delimiter = remove_delimiter;
     m_updateWatcher = updateWatcher;
     m_receive_func = receiveLines;
     m_conf = conf;
+    m_manager = manager;
     m_output = output; 
 
     m_loop = loop;
+
+    m_filter = new FilterRegex(conf.filter_conf);
+    if (!m_filter->init(NULL)) {
+        LWARNING << "Fail to init filter";
+        delete m_filter; m_filter = NULL;
+    }
 
     m_timer_trigger = new TimerWatcher();
     if (!m_timer_trigger->init(m_loop, 0, TIMER_WATCHER_DEFAULT_REPEAT,
@@ -94,15 +114,18 @@ bool TailWatcher::init(uv_loop_t *loop,
         delete m_stat_trigger; m_stat_trigger = NULL;
         return false;
     }
-    
-    m_rotate_handler = new RotateHandler(); 
-    if (!m_rotate_handler->init(path, this, onRotate)) {
-        LERROR << "Fail to init rotate handler";
-        delete m_rotate_handler; m_rotate_handler = NULL;
-        return false;
-    }
 
     m_io_handler = NULL;
+    
+    {
+        ScopedLock l(m_rotate_handler_mutex);
+        m_rotate_handler = new RotateHandler(); 
+        if (!m_rotate_handler->init(path, this, onRotate)) {
+            LERROR << "Fail to init rotate handler";
+            delete m_rotate_handler; m_rotate_handler = NULL;
+            return false;
+        }
+    }
 
     return true;
 }/*}}}*/
@@ -111,21 +134,30 @@ void TailWatcher::onNotify(void *arg)
 {/*{{{*/
     TailWatcher *tw = (TailWatcher *)arg;
 
-    // handle rotating
-    if (NULL != tw->m_rotate_handler)
-        tw->m_rotate_handler->onNotify((void *)tw->m_rotate_handler);
+    {
+        /* handle rotating */
+        ScopedLock l(tw->m_rotate_handler_mutex);
+        if (NULL != tw->m_rotate_handler)
+            tw->m_rotate_handler->onNotify((void *)tw->m_rotate_handler);
+    }
 
-    // handle io
-    if (NULL != tw->m_io_handler)
-        tw->m_io_handler->onNotify((void *)tw->m_io_handler);
+    {
+        /* handle io */
+        ScopedLock l(tw->m_io_handler_mutex);
+        if (NULL != tw->m_io_handler)
+            tw->m_io_handler->onNotify((void *)tw->m_io_handler);
+    }
 }/*}}}*/
 
-void TailWatcher::onRotate(void *arg, FILE *file)
+bool TailWatcher::onRotate(void *arg, FILE *file)
 {/*{{{*/
     TailWatcher *tw = (TailWatcher *)arg;
     PositionEntry *pe = tw->m_position_entry;
     unsigned int max_line_at_once = tw->m_max_line_at_once;
     unsigned int line_max_bytes = tw->m_line_max_bytes;
+    unsigned int read_max_bytes = tw->m_read_max_bytes;
+    char line_delimiter = tw->m_line_delimiter;
+    bool remove_delimiter = tw->m_remove_delimiter;
     ReceiveFunc receiveLines = tw->m_receive_func;
     UpdateFunc updateWatcher = tw->m_updateWatcher;
 
@@ -142,11 +174,13 @@ void TailWatcher::onRotate(void *arg, FILE *file)
             ino_t last_inode = pe->readInode();
             if (inode == last_inode) {
                 pos = pe->readPos();
-            } else if (inode != 0) {
+            } else if (last_inode != 0) {
                 pos = 0;
+                LINFO << "Updating position entry, inode: " << inode << ", pos: " << pos;
                 pe->update(inode, pos);
             } else {
                 pos = tw->m_read_from_head? 0: fsize;
+                LINFO << "Updating position entry, inode: " << inode << ", pos: " << pos;
                 pe->update(inode, pos);
             }
 
@@ -154,14 +188,17 @@ void TailWatcher::onRotate(void *arg, FILE *file)
 
             tw->m_io_handler = new IOHandler();
             bool res = tw->m_io_handler->init(file, pe, max_line_at_once, 
-                    line_max_bytes, tw->m_output, receiveLines);
+                    line_max_bytes, read_max_bytes,
+                    line_delimiter, remove_delimiter,
+                    tw->m_filter, tw->m_output, receiveLines);
             if (!res) {
+                LERROR << "Fail to init io handler, inode: " << inode;
                 delete tw->m_io_handler; tw->m_io_handler = NULL;
-                return;
+                return false;
             }
         }
     } else {
-        if (0 != file) {
+        if (NULL != file) {
             struct stat buf;
             fstat(fileno(file), &buf);
             off_t fsize = buf.st_size;
@@ -173,10 +210,13 @@ void TailWatcher::onRotate(void *arg, FILE *file)
 
                 IOHandler *io_handler = new IOHandler();
                 bool res = io_handler->init(file, pe, max_line_at_once, 
-                        line_max_bytes, tw->m_output, receiveLines);
+                        line_max_bytes, read_max_bytes,
+                        line_delimiter, remove_delimiter,
+                        tw->m_filter, tw->m_output, receiveLines);
                 if (!res) {
+                    LERROR << "Fail to init io handler, inode: " << inode;
                     delete io_handler;
-                    return;
+                    return false;
                 }
 
                 tw->m_io_handler->close();
@@ -189,10 +229,13 @@ void TailWatcher::onRotate(void *arg, FILE *file)
 
                 IOHandler *io_handler = new IOHandler();
                 bool res = io_handler->init(file, pe, max_line_at_once, 
-                        line_max_bytes, tw->m_output, receiveLines);
+                        line_max_bytes, read_max_bytes,
+                        line_delimiter, remove_delimiter,
+                        tw->m_filter, tw->m_output, receiveLines);
                 if (!res) {
+                    LERROR << "Fail to init io handler, inode: " << inode;
                     delete io_handler;
-                    return;
+                    return false;
                 }
 
                 delete tw->m_io_handler;
@@ -200,10 +243,21 @@ void TailWatcher::onRotate(void *arg, FILE *file)
             } else {
                 //(*updateWatcher)(tw->m_manager, tw->m_path_pattern, tw->m_path, 
                 //        swapState(&tw->m_position_entry, tw->m_io_handler));
-                (*updateWatcher)(tw->m_manager, tw->m_path_pattern, tw->m_path, tw->m_position_entry);
+                l.unlock();
+                if (!(*updateWatcher)(tw->m_manager, tw->m_path_pattern, tw->m_path, tw->m_position_entry)) {
+                    LWARNING << "Fail to rotate " << tw->m_path;
+                    return false;
+                } else {
+                    LDEBUG << "Closing file"
+                           << ", fd: " << fileno(file)
+                           << ", inode: " << getInode(file);
+                    fclose(file); 
+                }
             }
         }
     }
+
+    return true;
 }/*}}}*/
 
 PositionEntry *TailWatcher::swapState(PositionEntry **pep, IOHandler *io_handler)
@@ -224,6 +278,7 @@ void TailWatcher::stop(bool close_io)
     if (NULL != m_timer_trigger) m_timer_trigger->stop();
     if (NULL != m_stat_trigger) m_stat_trigger->stop();
 
+    ScopedLock l(m_io_handler_mutex);
     if (close_io && NULL != m_io_handler) {
         m_io_handler->onNotify(this->m_io_handler);
         m_io_handler->close();
@@ -247,13 +302,16 @@ bool TailWatcher::isActive()
         return is_active;
     }
 
-    if (NULL == m_io_handler)
-        return false;
-
     struct timeval last_stat_time = (struct timeval){0};
-    if (!m_io_handler->getLastIOTime(last_stat_time)) {
-        LERROR << "Fail to get last io time";
-        return true;
+    {
+        ScopedLock l(m_io_handler_mutex);
+        if (NULL == m_io_handler)
+            return false;
+
+        if (!m_io_handler->getLastIOTime(last_stat_time)) {
+            LERROR << "Fail to get last io time";
+            return true;
+        }
     }
 
     LDEBUG << "m_stat_silent_max_ms: " << m_stat_silent_max_ms

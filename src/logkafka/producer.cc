@@ -64,8 +64,7 @@ void Producer::rdkafkaLogger(const rd_kafka_t *rk,
 
 bool Producer::init(Zookeeper& zookeeper, 
     const string &compression_codec,
-    long long message_max_bytes,
-    long long message_send_max_retries)
+    const KafkaConf &kafka_conf)
 {/*{{{*/
     char errstr[512];
 
@@ -83,14 +82,21 @@ bool Producer::init(Zookeeper& zookeeper,
     }
 
     if (rd_kafka_conf_set(m_conf, "message.max.bytes",
-                int2Str(message_max_bytes).c_str(),
+                int2Str(kafka_conf.message_max_bytes).c_str(),
                 errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
         LERROR << "Fail to set kafka conf, " << errstr;
         return false;
     }
 
     if (rd_kafka_conf_set(m_conf, "message.send.max.retries",
-                int2Str(message_send_max_retries).c_str(),
+                int2Str(kafka_conf.message_send_max_retries).c_str(),
+                errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+        LERROR << "Fail to set kafka conf, " << errstr;
+        return false;
+    }
+
+    if (rd_kafka_conf_set(m_conf, "queue.buffering.max.messages",
+                int2Str(kafka_conf.queue_buffering_max_messages).c_str(),
                 errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
         LERROR << "Fail to set kafka conf, " << errstr;
         return false;
@@ -98,7 +104,7 @@ bool Producer::init(Zookeeper& zookeeper,
 
     /* If offset reporting (-o report) is enabled, use the
      * richer dr_msg_cb instead. */
-    bool report_offsets = true;
+    bool report_offsets = false;
     if (report_offsets) {
         rd_kafka_conf_set_dr_msg_cb(m_conf, msgDelivered2);
     } else {
@@ -180,6 +186,8 @@ bool Producer::send(const vector<string> &messages,
 
         rkmessages[i].len     = messages[i].length();
         rkmessages[i].payload = strndup(messages[i].c_str(), rkmessages[i].len);
+        rkmessages[i].key_len = key.length();
+        rkmessages[i].key     = strndup(key.c_str(), rkmessages[i].key_len);
         rkmessages[i]._private = msgidp;
     }
 
@@ -213,6 +221,12 @@ bool Producer::send(const vector<string> &messages,
     }
 
     rd_kafka_poll(m_rk, 0);
+
+    /* Note: librdkafka will duplicate the key once more, 
+     * so we can free the original one after producing*/
+    for (i = 0 ; i < msgcnt ; ++i) {
+        free(rkmessages[i].key);
+    }
 
     free(rkmessages);
     LINFO << "Partitioner: Produced "<< r << " messages, waiting for deliveries";

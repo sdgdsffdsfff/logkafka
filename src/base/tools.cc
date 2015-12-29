@@ -105,9 +105,18 @@ string int2Str(long long val)
     return ss.str();
 }/*}}}*/
 
+bool str2Bool(std::string str)
+{/*{{{*/
+    std::transform(str.begin(), str.end(), str.begin(), ::tolower);
+    std::istringstream is(str);
+    bool b;
+    is >> std::boolalpha >> b;
+    return b;
+}/*}}}*/
+
 const char* realDir(const char *filepath, char *realdir)
 {/*{{{*/
-    char buf[PATH_MAX];
+    char buf[PATH_MAX + 1] = {'\0'};
 
     if (NULL == realpath(filepath, buf)) {
         fprintf(stderr, "get realpath error: %s\n", strerror(errno));
@@ -127,7 +136,7 @@ bool isAbsPath(const char* filepath)
         return false;
     }
 
-    return filepath[1] == '/';
+    return filepath[0] == '/';
 }/*}}}*/
 
 set<std::string> diff_set(set<std::string> s1, set<std::string> s2)
@@ -166,6 +175,25 @@ ino_t getInode(const char *path)
     return inode;
 };/*}}}*/
 
+ino_t getInode(int fd)
+{/*{{{*/
+    struct stat buf;
+    ino_t inode;
+    if (0 == fstat(fd, &buf)) {
+        inode = buf.st_ino;
+    } else {
+        inode = INO_NONE;
+    }
+
+    return inode;
+}/*}}}*/
+
+ino_t getInode(FILE *fp)
+{/*{{{*/
+    if (NULL == fp) return INO_NONE;
+    return getInode(fileno(fp));
+};/*}}}*/
+
 off_t getFsize(const char *path)
 {/*{{{*/
     struct stat buf;
@@ -186,13 +214,10 @@ off_t getFsize(int fd)
 {/*{{{*/
     struct stat buf;
     off_t fsize;
-    ino_t inode;
     if (0 == fstat(fd, &buf)) {
         fsize = buf.st_size;
-        inode = buf.st_ino;
     } else {
         fsize = 0;
-        inode = INO_NONE;
     }
 
     return fsize;
@@ -206,11 +231,7 @@ off_t getFsize(FILE *fp)
 
 string sig2str(int signum)
 {/*{{{*/
-#ifdef _GNU_SOURCE
     return string(strsignal(signum));
-#else
-    return int2str(signum);
-#endif
 }/*}}}*/
 
 long long hexstr2num(const char *buf, long long default_num)
@@ -287,3 +308,14 @@ int fdprintf(int fd, size_t bufmax, const char *fmt, ...)
 }/*}}}*/
 #endif
 
+string getHostname()
+{/*{{{*/
+    char hostname[_POSIX_HOST_NAME_MAX + 1] = {'\0'};
+
+    if (0 != gethostname(hostname, _POSIX_HOST_NAME_MAX + 1)) {
+        LERROR << "Fail to get hostname";
+        return "";
+    }
+
+    return string(hostname);
+}/*}}}*/

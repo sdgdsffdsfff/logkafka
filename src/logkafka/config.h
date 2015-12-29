@@ -34,26 +34,38 @@
 #include "logkafka/common.h"
 
 #include "confuse.h"
+#include "easylogging/easylogging++.h"
 
 using namespace std;
 
 namespace logkafka {
+
+#define PRINT_VAR(name) Config::print(#name, (name))
 
 class Config {
     public:
         Config();
         ~Config();
         bool init(const char* filename);
+        template <typename T>
+        static void print(char *name, const T& value);
 
     public:
-        string zk_urls;
+        string zookeeper_connect;
+        string zookeeper_urls;
+        string kafka_chroot_path;
         string gdbm_path;
         string pos_path;
+        string logkafka_id;
         unsigned long line_max_bytes;
+        unsigned long read_max_bytes;
+        unsigned long key_max_bytes;
         unsigned long zookeeper_upload_interval;
         unsigned long refresh_interval;
-        unsigned long message_send_max_retries;
         unsigned long stat_silent_max_ms;
+        unsigned long path_queue_max_size;
+        unsigned long message_send_max_retries;
+        unsigned long queue_buffering_max_messages;
 
     private:
         Config(const Config &config);
@@ -61,6 +73,12 @@ class Config {
     private:
         cfg_t *m_cfg;
 };
+
+template <typename T>
+void Config::print(char *name, const T& value)
+{/*{{{*/
+    LINFO << "Name: " << name << ", Value: " << value;
+}/*}}}*/
 
 } // namespace logkafka
 

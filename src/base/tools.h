@@ -46,6 +46,7 @@ extern void rtrim(char *str);
 extern void ltrim(char *str);
 extern void trim(char *str);
 extern string int2Str(long long val);
+extern bool str2Bool(string str);
 extern const char* realDir(const char *filepath, char *realdir);
 extern bool isAbsPath(const char* filepath);
 
@@ -63,6 +64,8 @@ extern set<std::string> diff_set(set<std::string> s1, set<std::string> s2);
 extern set<std::string> intersect_set(set<std::string> s1, set<std::string> s2);
 
 extern ino_t getInode(const char *path);
+extern ino_t getInode(int fd);
+extern ino_t getInode(FILE *fp);
 extern off_t getFsize(const char *path);
 extern off_t getFsize(int fd);
 extern off_t getFsize(FILE *fp);
@@ -78,5 +81,7 @@ bool globPath(const string &path_pattern, vector<string> &paths);
 #ifndef _GNU_SOURCE
 int fdprintf(int fd, size_t bufmax, const char * fmt, ...);
 #endif
+
+extern string getHostname();
 
 #endif // BASE_TOOLS_H_

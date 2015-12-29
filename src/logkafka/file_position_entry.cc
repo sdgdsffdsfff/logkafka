@@ -55,16 +55,16 @@ bool FilePositionEntry::updatePos(off_t pos)
 off_t FilePositionEntry::readPos() 
 {/*{{{*/
     fseek(m_file, m_seek, SEEK_SET);
-    char buf[16];
-    return (POS_SIZE == fread(buf, POS_SIZE, 1, m_file)) ? 
+    char buf[POS_SIZE + 1] = {'\0'};
+    return (1 == fread(buf, POS_SIZE, 1, m_file)) ? 
         hexstr2num(buf, -1): -1;
 }/*}}}*/
 
 ino_t FilePositionEntry::readInode() 
 {/*{{{*/
     fseek(m_file, m_seek + INO_OFFSET, SEEK_SET);
-    char buf[8];
-    return (INO_SIZE == fread(buf, INO_SIZE, 1, m_file)) ? 
+    char buf[INO_SIZE + 1] = {'\0'};
+    return (1 == fread(buf, INO_SIZE, 1, m_file)) ? 
         hexstr2num(buf, INO_NONE): INO_NONE;
 }/*}}}*/
 

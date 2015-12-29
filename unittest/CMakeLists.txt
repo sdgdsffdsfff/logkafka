@@ -8,8 +8,9 @@ IF (test)
   # Set compile flags
   SET(GCC_COVERAGE_COMPILE_FLAGS "-fprofile-arcs -ftest-coverage")
   SET(GCC_COVERAGE_LINK_FLAGS    "-lgcov")
-  SET( CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${GCC_COVERAGE_COMPILE_FLAGS}" )
-  SET( CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} ${GCC_COVERAGE_LINK_FLAGS}" )
+  SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${GCC_COVERAGE_COMPILE_FLAGS}")
+  SET(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} ${GCC_COVERAGE_LINK_FLAGS}")
+  ADD_DEFINITIONS(-DGTEST_HAS_TR1_TUPLE=0)
 
   # This adds another subdirectory, which has 'project(gtest)'.
   ADD_SUBDIRECTORY(lib/gtest-1.6.0)
@@ -134,6 +135,26 @@ IF (test)
       ENDIF (LIBUV_INCLUDE_DIR AND LIBUV_LIBRARIES)
   
   ENDIF (NOT INSTALL_LIBUV)
+
+  # pcre2
+  IF (NOT INSTALL_LIBPCRE2)
+  
+      FIND_PACKAGE( libpcre2 REQUIRED)
+      MARK_AS_ADVANCED(
+      LIBPCRE2_INCLUDE_DIR
+      LIBPCRE2_LIBRARIES
+      )
+      IF (LIBPCRE2_INCLUDE_DIR AND LIBPCRE2_LIBRARIES)
+      MESSAGE(STATUS "Found libpcre2 libraries")
+         INCLUDE_DIRECTORIES(${LIBPCRE2_INCLUDE_DIR})
+          MESSAGE( ${LIBPCRE2_LIBRARIES} )
+          MESSAGE( ${LIBPCRE2_INCLUDE_DIR} )
+          TARGET_LINK_LIBRARIES(runUnitTests ${LIBPCRE2_LIBRARIES} )
+      ELSE (LIBPCRE2_INCLUDE_DIR AND LIBPCRE2_LIBRARIES)
+          MESSAGE(FATAL_ERROR "Failed to find libpcre2 libraries")
+      ENDIF (LIBPCRE2_INCLUDE_DIR AND LIBPCRE2_LIBRARIES)
+  
+  ENDIF (NOT INSTALL_LIBPCRE2)
   
   # pthread
   FIND_PACKAGE( libpthread REQUIRED)
@@ -151,19 +172,25 @@ IF (test)
   ENDIF (LIBPTHREAD_INCLUDE_DIR AND LIBPTHREAD_LIBRARIES)
   
   # rt ( libkafka )
-  FIND_PACKAGE( librt REQUIRED)
-  MARK_AS_ADVANCED(
-  LIBRT_INCLUDE_DIR
-  LIBRT_LIBRARIES
-  )
-  IF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
-  MESSAGE(STATUS "Found librt libraries")
-     INCLUDE_DIRECTORIES(${LIBRT_INCLUDE_DIR})
-      MESSAGE( ${LIBRT_LIBRARIES} )
-      TARGET_LINK_LIBRARIES(runUnitTests ${LIBRT_LIBRARIES} )
-  ELSE (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
-      MESSAGE(FATAL_ERROR "Failed to find librt libraries")
-  ENDIF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+  IF (UNIX AND NOT APPLE)
+      FIND_PACKAGE( librt REQUIRED)
+      MARK_AS_ADVANCED(
+      LIBRT_INCLUDE_DIR
+      LIBRT_LIBRARIES
+      )
+      IF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+      MESSAGE(STATUS "Found librt libraries")
+         INCLUDE_DIRECTORIES(${LIBRT_INCLUDE_DIR})
+          MESSAGE( ${LIBRT_LIBRARIES} )
+          TARGET_LINK_LIBRARIES(runUnitTests ${LIBRT_LIBRARIES} )
+      ELSE (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+          MESSAGE(FATAL_ERROR "Failed to find librt libraries")
+      ENDIF (LIBRT_INCLUDE_DIR AND LIBRT_LIBRARIES)
+  ELSEIF (WIN32)
+    # Windows-specific includes or actions
+  ELSEIF (APPLE)
+    # ...
+  ENDIF (UNIX AND NOT APPLE)
   
   # z ( libkafka )
   FIND_PACKAGE( libz REQUIRED)
@@ -181,5 +208,79 @@ IF (test)
       MESSAGE(${LIBZ_INCLUDE_DIR})
       MESSAGE(FATAL_ERROR "Failed to find libz libraries")
   ENDIF (LIBZ_INCLUDE_DIR AND LIBZ_LIBRARIES)
+
+  ################################
+  # External Projects
+  ################################
+  include(ExternalProject)
+  
+  # librdkafka 
+  IF (INSTALL_LIBRDKAFKA)
+  
+      MESSAGE(STATUS "installing librdkafka ...")
+      CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
+  
+      ExternalProject_Get_Property(project_librdkafka install_dir)
+      add_library(librdkafka STATIC IMPORTED)
+      set_property(TARGET librdkafka PROPERTY IMPORTED_LOCATION ${install_dir}/lib/librdkafka.a)
+
+      ADD_DEPENDENCIES(runUnitTests project_librdkafka)
+  
+      TARGET_LINK_LIBRARIES(runUnitTests librdkafka)
+      INCLUDE_DIRECTORIES(${install_dir}/include)
+  
+  ENDIF (INSTALL_LIBRDKAFKA)
+  
+  # libzookeeper_mt 
+  IF (INSTALL_LIBZOOKEEPER_MT)
+  
+      MESSAGE(STATUS "installing libzookeeper_mt ...")
+      CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
+  
+      ExternalProject_Get_Property(project_libzookeeper_mt install_dir)
+      add_library(libzookeeper_mt STATIC IMPORTED)
+      set_property(TARGET libzookeeper_mt PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libzookeeper_mt.a)
+
+
+      ADD_DEPENDENCIES(runUnitTests project_libzookeeper_mt)
+  
+      TARGET_LINK_LIBRARIES(runUnitTests libzookeeper_mt)
+      INCLUDE_DIRECTORIES(${install_dir}/include)
+  
+  ENDIF (INSTALL_LIBZOOKEEPER_MT)
+  
+  # libuv 
+  IF (INSTALL_LIBUV)
+  
+      MESSAGE(STATUS "installing libuv ...")
+      CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
+  
+      ExternalProject_Get_Property(project_libuv install_dir)
+      add_library(libuv STATIC IMPORTED)
+      set_property(TARGET libuv PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libuv.a)
+
+      ADD_DEPENDENCIES(runUnitTests project_libuv)
+  
+      TARGET_LINK_LIBRARIES(runUnitTests libuv)
+      INCLUDE_DIRECTORIES(${install_dir}/include)
+  
+  ENDIF (INSTALL_LIBUV)
+
+  # libpcre2 
+  IF (INSTALL_LIBPCRE2)
+  
+      MESSAGE(STATUS "installing libpcre2 ...")
+      CMAKE_MINIMUM_REQUIRED(VERSION 3.0.2)
+  
+      ExternalProject_Get_Property(project_libpcre2 install_dir)
+      add_library(libpcre2 STATIC IMPORTED)
+      set_property(TARGET libpcre2 PROPERTY IMPORTED_LOCATION ${install_dir}/lib/libpcre2-8.a)
+
+      ADD_DEPENDENCIES(runUnitTests project_libpcre2)
+  
+      TARGET_LINK_LIBRARIES(runUnitTests libpcre2)
+      INCLUDE_DIRECTORIES(${install_dir}/include)
+  
+  ENDIF (INSTALL_LIBPCRE2)
 
 endif()

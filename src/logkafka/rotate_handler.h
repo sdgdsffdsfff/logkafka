@@ -41,16 +41,18 @@ using namespace base;
 
 namespace logkafka {
 
-typedef void (*RotateFunc)(void *, FILE *);
+typedef bool (*RotateFunc)(void *, FILE *);
 
 class RotateHandler
 {
     public:
-        RotateHandler() {};
+        RotateHandler() {m_last_rotate_time = (struct timeval){0};};
         bool init(string path,
                   void *rotate_func_arg,
                   RotateFunc on_rotate);
         static void onNotify(void *arg);
+        void updateLastRotateTime();
+        bool getLastRotateTime(struct timeval &tv);
 
     public:
         string m_path;
@@ -60,7 +62,8 @@ class RotateHandler
         off_t m_fsize;
 
     private:
-        Mutex m_rotate_handler_mutex;
+        struct timeval m_last_rotate_time;
+        Mutex m_last_rotate_time_mutex;
 };
 
 } // namespace logkafka
